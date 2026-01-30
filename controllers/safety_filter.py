@@ -18,11 +18,7 @@ class CasadiSafetyFilter:
         # setupt the casadi functions
         self._setup_casadi()
 
-    def _setup_casadi(self):
-        """
-        Setup CasADi functions for barrier function gradients and dynamics matrix g(x).
-        """
-        # Define Symbolic Variables
+    def _setup_casadi(self): # TODO: e Symbolic Variables
         
         # Dynamic inputs for one obstacle
         # we define the equations for a single obstacle, and will sum over multiple obstacles later
@@ -45,6 +41,7 @@ class CasadiSafetyFilter:
             # h = ||p - obs||^2 - (r_rob + r_obs)^2
             safe_dist = obs_r + self.robot_radius
             h = (px - obs_x)**2 + (py - obs_y)**2 - safe_dist**2
+
 
         elif self.scenario_type == "double_integrator":
             x = ca.SX.sym('x', 4) # [x, y, vx, vy]
@@ -75,12 +72,14 @@ class CasadiSafetyFilter:
                 ca.horzcat(ca.sin(theta), 0),
                 ca.horzcat(0,             1)
             )
-            
+
             safe_dist = obs_r + self.robot_radius
             h = (px - obs_x)**2 + (py - obs_y)**2 - safe_dist**2
 
         else:
             raise ValueError("Unknown Scenario")
+
+
 
         # Compute Gradient of One Barrier
 
