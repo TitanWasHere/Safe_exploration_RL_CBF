@@ -24,11 +24,10 @@ class SafeMBRL:
         self.ka2 = 0.1
         self.beta = 0.001
         self.gamma_c = 1.0
-        
-        self.N_extrapolate = 5 
+        self.gamma_discount = 0.98
+        self.N_extrapolate = 1 
 
     def get_staf_kernels(self, x):
-        """State-Aware Function kernels: phi_i(x) = x^T * c_i(x)."""
         norm_x_sq = np.dot(x, x)
         nu = norm_x_sq / (norm_x_sq + 1.0)
         
@@ -40,27 +39,31 @@ class SafeMBRL:
             phi[i] = np.dot(x, ci)
         
         grad_phi = np.zeros((self.L, self.state_dim))
+        d_nu_dx = (2.0 * x) / ((norm_x_sq + 1.0)**2)
+        
         for i in range(self.L):
             angle = 2 * np.pi * i / self.L
             di = np.array([np.cos(angle), np.sin(angle)])
             ci = x + nu * di
-            grad_phi[i, :] = ci
+            dc_i_dx = np.eye(self.state_dim) + np.outer(di, d_nu_dx)
+            grad_phi[i, :] = ci + x @ dc_i_dx
             
         return phi, grad_phi
 
     def compute_reward(self, x, u):
-        """r(x, u) = x^T Q x + u^T R u (Eq. 10)"""
-        return x.T @ self.Q @ x + u.T @ self.R @ u
+        return -(x.T @ self.Q @ x + u.T @ self.R @ u)
 
     def get_action(self, x, obstacles, goal, g_x=None):
-        phi, grad_phi = self.get_staf_kernels(x)
+        x_rel = x - goal
+        phi, grad_phi = self.get_staf_kernels(x_rel)
+        
         if g_x is None:
             g_x = self.safety_filter.f_g(x).full()
         
         grad_V_hat = self.Wa @ grad_phi
         u_nom = -0.5 * self.R_inv @ (g_x.T @ grad_V_hat)
         u_nom = u_nom.flatten()
-
+        
         obs_for_filter = np.concatenate([x, goal])
         u_safe, _ = self.safety_filter.get_safe_action(obs_for_filter, u_nom, obstacles)
         
@@ -84,13 +87,17 @@ class SafeMBRL:
         omega = grad_phi @ (f_hat_flat + gu_flat)
         
         reward = self.compute_reward(x, u)
-        delta_t = float(reward + self.Wc @ omega)
+        V_current = self.Wc @ phi
+        delta_t = float(reward - V_current)
 
         sum_omega_delta = np.zeros(self.L)
         sum_lambda = np.zeros((self.L, self.L))
+        sum_actor_term = np.zeros(self.L)
         
         for _ in range(self.N_extrapolate):
-            x_rand_offset = np.random.uniform(-0.5, 0.5, size=(self.state_dim, 1))
+            norm_x_sq = np.dot(x.flatten(), x.flatten())
+            nu = norm_x_sq / (norm_x_sq + 1.0)
+            x_rand_offset = np.random.uniform(-nu, nu, size=(self.state_dim, 1))
             x_rand = x + x_rand_offset
             x_rand_flat = x_rand.flatten()
             
@@ -107,27 +114,36 @@ class SafeMBRL:
             omega_i = grad_phi_i @ (f_i_flat + gu_i_flat)
             rho_i = 1.0 + self.gamma_c * np.dot(omega_i, omega_i)
             reward_i = self.compute_reward(x_rand, u_i.reshape(-1, 1))
-            delta_i = float(reward_i + self.Wc @ omega_i)
+            V_i = self.Wc @ phi_i
+            delta_i = float(reward_i - V_i)
             
             sum_omega_delta += (omega_i / rho_i**2) * delta_i
             sum_lambda += (np.outer(omega_i, omega_i) / rho_i**2)
+            G_phi_i = grad_phi_i @ g_i @ self.R_inv @ g_i.T @ grad_phi_i.T
+            actor_contrib = (G_phi_i.T @ self.Wa) * np.dot(omega_i, self.Wc)
+            sum_actor_term += actor_contrib / rho_i**2
 
         rho_t = 1.0 + self.gamma_c * np.dot(omega, omega)
-        
         lambda_t = np.outer(omega, omega) / (rho_t**2)
         dot_Gamma = self.beta * self.Gamma - self.Gamma @ (self.kc1 * lambda_t + (self.kc2 / self.N_extrapolate) * sum_lambda) @ self.Gamma
         self.Gamma += dot_Gamma * dt
-        self.Gamma = np.clip(self.Gamma, 0.1, 1000.0)
+        self.Gamma = np.maximum(self.Gamma, 0.01 * np.eye(self.L))
         
         dot_Wc = -self.Gamma @ (self.kc1 * (omega / rho_t**2) * delta_t + (self.kc2 / self.N_extrapolate) * sum_omega_delta)
+        dot_Wc = np.clip(dot_Wc, -5.0, 5.0)
         self.Wc += dot_Wc * dt
-        self.Wc = np.clip(self.Wc, -100.0, 100.0)
         
         G_phi = grad_phi @ g_x @ self.R_inv @ g_x.T @ grad_phi.T
-        omega_weighted = (self.Wa @ omega) * (self.Wc @ omega)
-        term_actor = (self.kc1 / (4 * rho_t**2)) * omega_weighted * (G_phi @ self.Wa)
-        dot_Wa = -self.ka1 * (self.Wa - self.Wc) - self.ka2 * self.Wa + term_actor
+        omega_wc = np.dot(omega, self.Wc)
+        term_actor_real = (self.kc1 / (4 * rho_t**2)) * omega_wc * (G_phi.T @ self.Wa)
+        term_actor_sim = (self.kc2 / (4 * self.N_extrapolate)) * sum_actor_term
+        
+        dot_Wa = -self.ka1 * (self.Wa - self.Wc) - self.ka2 * self.Wa + term_actor_real + term_actor_sim
+        dot_Wa = np.clip(dot_Wa, -10.0, 10.0)
+        
         self.Wa += dot_Wa * dt
-        self.Wa = np.clip(self.Wa, -100.0, 100.0)
+        W_norm = np.linalg.norm(self.Wa)
+        if W_norm > 50.0:
+            self.Wa = self.Wa * (50.0 / W_norm)
 
         return delta_t

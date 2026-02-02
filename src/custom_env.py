@@ -1,7 +1,3 @@
-"""
-File defines an custom environment with obstacles used for safe RL testing.
-"""
-
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
@@ -30,8 +26,8 @@ class ObstacleEnv(gym.Env):
         # 2. Define Obstacles in the Environment
         self.scenario.obstacles = [
             {'x': 0.0, 'y': 0.0, 'r': 1.0},
-            {'x': -2.0, 'y': 2.0, 'r': 0.7},
-            {'x': 2.0, 'y': -1.5, 'r': 0.6}
+            #{'x': -2.0, 'y': 2.0, 'r': 0.7},
+            #{'x': 2.0, 'y': -1.5, 'r': 0.6}
         ]
 
         # 3. Define Goal State
@@ -57,6 +53,14 @@ class ObstacleEnv(gym.Env):
         self.window = None
         self.clock = None
         self.scale = 40
+        
+        # Workspace boundaries
+        #self.workspace_bounds = {
+        #    'x_min': -10.0,
+        #    'x_max': 10.0,
+        #    'y_min': -10.0,
+        #    'y_max': 10.0
+        #}
 
     def reset(self, seed=None, options=None):
         """
@@ -95,23 +99,39 @@ class ObstacleEnv(gym.Env):
         min_h = self.scenario.get_h(self.state)
         is_safe = bool(min_h >= 0)
         
-        # 4. Base Reward (Distance penalty + Control effort)
+        # 4. Check if robot is outside workspace boundaries
+        #outside_workspace = (
+        #    curr_pos[0] < self.workspace_bounds['x_min'] or 
+        #    curr_pos[0] > self.workspace_bounds['x_max'] or
+        #    curr_pos[1] < self.workspace_bounds['y_min'] or 
+        #    curr_pos[1] > self.workspace_bounds['y_max']
+        #)
+        
+        # 5. Base Reward (Distance penalty + Control effort)
         # This encourages moving toward goal and being efficient
         reward = -dist_to_goal - 0.05 * np.linalg.norm(action)**2
         
         terminated = False
         truncated = False
         
-        # 5. Collision Logic
+        # 6. Outside Workspace Logic
+        #if outside_workspace:
+            #terminated = True   # Stop the episode
+            #reward = -1000.0     # Big penalty for leaving workspace
+            
+            #info = {"is_safe": False, "reason": "outside_workspace", "min_h": min_h, "position": curr_pos}
+            #return self._get_obs(), reward, terminated, truncated, info
+        
+        # 7. Collision Logic
         if not is_safe:
             terminated = True   # Stop the episode
-            reward = -500.0     # Big penalty for crashing
+            reward = -1000.0     # Big penalty for crashing
             
             info = {"is_safe": False, "reason": "collision", "min_h": min_h}
             return self._get_obs(), reward, terminated, truncated, info
 
         
-        # 6. Goal Reached Logic
+        # 8. Goal Reached Logic
         if dist_to_goal < 0.2:
             terminated = True   # Stop the episode
             reward += 200.0     # Big bonus for success
@@ -119,7 +139,7 @@ class ObstacleEnv(gym.Env):
             info = {"is_safe": True, "reason": "goal_reached", "min_h": min_h}
             return self._get_obs(), reward, terminated, truncated, info
 
-        # 7. Standard Info
+        # 9. Standard Info
         info = {
             "is_safe": True, 
             "min_h": min_h, 
@@ -211,97 +231,3 @@ class ObstacleEnv(gym.Env):
         if self.window is not None:
             pygame.quit()
 
-# Some simple test code to verify the environment works as expected
-if __name__ == "__main__":
-    import time
-    
-    # Use Fixed Goal mode
-    # mode: single_integrator, double_integrator, unicycle
-    SCENARIO = "unicycle"
-    env = ObstacleEnv(scenario_name=SCENARIO, goal_mode="fixed", render_mode="human")
-    
-    # Reset
-    obs, info = env.reset()
-    print("Test Started. Robot should crash into the obstacle at (0,0).")
-
-    for step in range(1000):
-        
-        # Simple logic to aim at obstacle (0,0)
-        target_angle = np.arctan2(0.0 - obs[1], 0.0 - obs[0])
-        current_angle = obs[2]
-        angle_err = (target_angle - current_angle + np.pi) % (2*np.pi) - np.pi
-        
-        if SCENARIO == "single_integrator":
-            # Indices:
-            # obs[0], obs[1] = Position (x, y)
-            # obs[2], obs[3] = Goal (gx, gy)
-
-            # 1. Vector to goal
-            dx = obs[2] - obs[0] # Goal_x - x
-            dy = obs[3] - obs[1] # Goal_y - y
-            
-            # 2. Normalize and scale to max speed
-            gain = 1.0
-            action = np.array([gain * dx, gain * dy])
-        
-        elif SCENARIO == "double_integrator":
-            # Indices:
-            # obs[0], obs[1] = Position (x, y)
-            # obs[2], obs[3] = Velocity (vx, vy)
-            # obs[4], obs[5] = Goal (gx, gy)
-
-            # 1. Calculate Errors
-            pos_error_x = obs[4] - obs[0]
-            pos_error_y = obs[5] - obs[1]
-            
-            vel_x = obs[2]
-            vel_y = obs[3]
-
-            # 2. PD Controller Gains
-            Kp = 2.0 
-            Kd = 1.5 
-
-            # 3. Compute Acceleration
-            # u = Kp * error - Kd * velocity
-            u_x = Kp * pos_error_x - Kd * vel_x
-            u_y = Kp * pos_error_y - Kd * vel_y
-
-            action = np.array([u_x, u_y])
-            
-        elif SCENARIO == "unicycle":
-            # 1. Unicycle Logic
-            # Indices:
-            # obs[0], obs[1] = Position (x, y)
-            # obs[2] = Orientation (theta)
-            # obs[3], obs[4] = Goal (gx, gy)
-
-            dx = obs[3] - obs[0]
-            dy = obs[4] - obs[1]
-            target_angle = np.arctan2(dy, dx)
-            current_angle = obs[2]
-            
-            # Find shortest angle difference
-            angle_err = (target_angle - current_angle + np.pi) % (2*np.pi) - np.pi
-            
-            v = 1.0
-            omega = 3.0 * angle_err
-
-            # action is simply move with fixed velocity and correct heading
-            action = np.array([v, omega])
-            
-        # 2. Step
-        obs, reward, terminated, truncated, info = env.step(action)
-        
-        # 3. Check Termination
-        if terminated:
-            print(f"Episode Ended at Step {step}")
-            print(f"Final Reward: {reward}")
-            if reward < -100:
-                print("Result: CRASHED (Success test)")
-            else:
-                print("Result: REACHED GOAL")
-            
-            time.sleep(1)
-            break
-            
-    env.close()

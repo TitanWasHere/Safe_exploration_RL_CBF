@@ -1,106 +1,100 @@
 import numpy as np
 
 class LearnerDynamics:
-    """
-    Implements Section 4.3 (System Identification) of the paper.
-    Uses Integral Concurrent Learning (ICL) to estimate the unknown drift f(x) = Y(x)θ.
-    """
-    def __init__(self, scenario_type="single_integrator", learning_rate=0.5, history_size=50):
+    def __init__(self, scenario_type="single_integrator", learning_rate=0.5, history_size=50, 
+                 integration_window=10):
         self.scenario_type = scenario_type
-        self.gamma = learning_rate  # Adaptation gain
+        self.gamma = learning_rate
+        self.integration_window = integration_window
         
-        # 1. Initialize Basis Functions and Parameter Dimensions
         if scenario_type == "single_integrator":
-            # Paper Eq (Sec 6): f(x) = [-0.6x1 - x2, x1^3]
-            # Basis Y(x) is (2 x 3), theta is (3 x 1)
             self.theta_dim = 3
             self.state_dim = 2
         elif scenario_type == "double_integrator":
-            self.theta_dim = 2 # learning drag coefficients
+            self.theta_dim = 2
             self.state_dim = 4
         elif scenario_type == "unicycle":
-            self.theta_dim = 1 # learning the drift constant in y
+            self.theta_dim = 1
             self.state_dim = 3
         else:
             raise ValueError("Unknown scenario")
 
-        # Parameter estimate (theta_hat)
         self.theta_hat = np.zeros(self.theta_dim, dtype=np.float32)
-        
-        # Concurrent Learning Buffer (to store historical data for convergence)
         self.history_size = history_size
-        self.buffer = [] # Stores tuples of (integral_Y, delta_x_minus_integral_gu)
+        self.buffer = []
+        self.trajectory_window = []
 
     def get_regressor(self, x):
-        """
-        Defines Y(x) such that f(x) = Y(x) @ theta.
-        Based on Section 6: Nonlinear System example.
-        """
         if self.scenario_type == "single_integrator":
-            # Y(x) = [[x1, x2, 0], [0, 0, x1^3]]
-            # x = [x1, x2]
             Y = np.zeros((2, 3))
             Y[0, 0] = x[0]
             Y[0, 1] = x[1]
             Y[1, 2] = x[0]**3
             return Y
-        
         elif self.scenario_type == "double_integrator":
-            # Learning drag for vx and vy
             Y = np.zeros((4, 2))
-            Y[0, 0] = x[2] # kinematic link
+            Y[0, 0] = x[2]
             Y[1, 1] = x[3]
-            Y[2, 0] = -x[2] # drag x
-            Y[3, 1] = -x[3] # drag y
+            Y[2, 0] = -x[2]
+            Y[3, 1] = -x[3]
             return Y
-
         elif self.scenario_type == "unicycle":
-            # Learning a drift constant in y
             Y = np.zeros((3, 1))
-            Y[1, 0] = 1.0 # Constant bias in y-dot
+            Y[1, 0] = 1.0
             return Y
 
     def predict_f(self, x):
-        """Returns the current estimate of the drift: f_hat = Y(x) @ theta_hat"""
         Y = self.get_regressor(x)
         return Y @ self.theta_hat
 
-    def update(self, x_old, x_new, u, dt, g_matrix):
-        """
-        Implements the parameter identification update law.
-        Uses the integral form to avoid needing acceleration (x_dot).
-        """
-        # 1. Calculate Integrals (approximate over one dt)
-        # In a real ICL implementation, you might integrate over a window T.
-        # Here we use the Euler approximation for the step.
-        Y = self.get_regressor(x_old)
-        
-        # Predicted change from known control part: integral of g(x)u
-        gu_term = g_matrix @ u
-        
-        # The relationship: x_new - x_old = integral(Y*theta) + integral(g*u)
-        # Therefore: (x_new - x_old - gu*dt) = (Y*dt) @ theta
-        target = (x_new - x_old) - (gu_term * dt)
-        regressor_dt = Y * dt
-        
-        # 2. Update Buffer for Concurrent Learning
-        # This ensures convergence without Persistence of Excitation (PE)
-        if len(self.buffer) < self.history_size:
-            self.buffer.append((regressor_dt, target))
-        else:
-            # Replace oldest if new data is "sufficiently different" (simplified)
-            self.buffer.pop(0)
-            self.buffer.append((regressor_dt, target))
+    def reset_window(self):
+        self.trajectory_window = []
 
-        # 3. Gradient Descent Update Law (Ref [29])
-        # d(theta_hat)/dt = Gamma * sum( Y_i.T @ (target_i - Y_i @ theta_hat) )
+    def update(self, x_old, x_new, u, dt, g_matrix):
+        self.trajectory_window.append((x_old.copy(), u.copy(), dt, g_matrix.copy()))
+        
+        if len(self.trajectory_window) > self.integration_window:
+            self.trajectory_window.pop(0)
+        
+        if len(self.trajectory_window) >= self.integration_window:
+            integral_Y = np.zeros((self.state_dim, self.theta_dim))
+            integral_gu = np.zeros(self.state_dim)
+            
+            for i in range(len(self.trajectory_window)):
+                x_i, u_i, dt_i, g_i = self.trajectory_window[i]
+                Y_i = self.get_regressor(x_i)
+                gu_i = (g_i @ u_i).flatten()
+                integral_Y += Y_i * dt_i
+                integral_gu += gu_i * dt_i
+            
+            x_start = self.trajectory_window[0][0]
+            x_end = self.trajectory_window[-1][0]
+            delta_x = x_end - x_start
+            target = delta_x - integral_gu
+            
+            if len(self.buffer) < self.history_size:
+                self.buffer.append((integral_Y, target))
+            else:
+                self.buffer.pop(0)
+                self.buffer.append((integral_Y, target))
+        else:
+            Y = self.get_regressor(x_old)
+            gu_term = (g_matrix @ u).flatten()
+            target = (x_new - x_old) - (gu_term * dt)
+            regressor_dt = Y * dt
+            
+            if len(self.buffer) < self.history_size:
+                self.buffer.append((regressor_dt, target))
+            else:
+                self.buffer.pop(0)
+                self.buffer.append((regressor_dt, target))
+
         update_grad = np.zeros_like(self.theta_hat)
         for Y_i, target_i in self.buffer:
             error = target_i - (Y_i @ self.theta_hat)
             update_grad += Y_i.T @ error
-            
+        
+        update_grad = np.clip(update_grad, -10.0, 10.0)
         self.theta_hat += self.gamma * update_grad
-        
-        
-        # Numerical stability: clip theta_hat
-        self.theta_hat = np.clip(self.theta_hat, -50.0, 50.0)
+        # Soft bounds on parameters (prevents NaN propagation)
+        self.theta_hat = np.clip(self.theta_hat, -20.0, 20.0)
