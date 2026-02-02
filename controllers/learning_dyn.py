@@ -100,3 +100,7 @@ class LearnerDynamics:
             update_grad += Y_i.T @ error
             
         self.theta_hat += self.gamma * update_grad
+        
+        
+        # Numerical stability: clip theta_hat
+        self.theta_hat = np.clip(self.theta_hat, -50.0, 50.0)
