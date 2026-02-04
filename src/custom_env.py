@@ -1,150 +1,183 @@
+"""
+Custom environment used to test the rl algorithm.
+"""
+
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import pygame
-from src.scenarios import *
 
 class ObstacleEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
 
-    def __init__(self, scenario_name="single_integrator", goal_mode="fixed", render_mode=None, dt=0.01):
+    def __init__(
+        self, 
+        scenario, 
+        goal_mode="fixed", 
+        render_mode=None, 
+        dt=0.01,
+        goal_distance = 0.25,
+        max_obstacles=5,               # Maximum number of obstacles
+        area_bounds=((-6, 6), (-6, 6)) # (min_x, max_x), (min_y, max_y)
+    ):
         super().__init__()
         self.render_mode = render_mode
         self.dt = dt
-        self.goal_mode = goal_mode # "fixed" or "random"
+        self.goal_mode = goal_mode 
+        self.max_obstacles = max_obstacles
+        self.area_bounds = area_bounds
+        self.goal_distance = goal_distance
 
-        # 1. Select Scenario
-        if scenario_name == "single_integrator":
-            self.scenario = SingleIntegrator()
-        elif scenario_name == "double_integrator":
-            self.scenario = DoubleIntegrator()
-        elif scenario_name == "unicycle":
-            self.scenario = Unicycle()
-        else:
-            raise ValueError("Unknown scenario")
+        # Scenario
+        self.scenario = scenario
 
-        # 2. Define Obstacles in the Environment
-        self.scenario.obstacles = [
-            {'x': 0.0, 'y': 0.0, 'r': 1.0},
-            #{'x': -2.0, 'y': 2.0, 'r': 0.7},
-            #{'x': 2.0, 'y': -1.5, 'r': 0.6}
-        ]
+        # Goal is strictly at the Origin (0,0) and always 2D (x, y position)
+        self.goal_pos = np.zeros(2, dtype=np.float32)
 
-        # 3. Define Goal State
-        self.goal_pos = np.array([1.5, 2.0], dtype=np.float32)
+        # OBSERVATION SPACE:
+        # State + Goal
+        self.obs_state_dim = self.scenario.state_dim + 2 
 
-        # 4. Spaces
-        # Observation = [State_Vector, Goal_X, Goal_Y]
-        # the observation space is what the agent sees, so it includes the goal position and the state vector of the robot
-        obs_dim = self.scenario.state_dim + 2 
-
-        # space.box creates a continuous space with given bounds
-        self.observation_space = spaces.Box(-np.inf, np.inf, shape=(obs_dim,), dtype=np.float32)
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(self.obs_state_dim,), dtype=np.float32
+        )
         
-        # Action space depends on scenario dynamics
-        # the action space represent the control inputs the agent can apply to the robot
+        # ACTION SPACE:
+        # +- max action defined in the scenario
         self.action_space = spaces.Box(
             low=-self.scenario.action_max, 
             high=self.scenario.action_max,
             shape=(self.scenario.action_dim,), dtype=np.float32
         )
 
-        # Rendering
         self.window = None
         self.clock = None
-        self.scale = 40
-        
-        # Workspace boundaries
-        #self.workspace_bounds = {
-        #    'x_min': -10.0,
-        #    'x_max': 10.0,
-        #    'y_min': -10.0,
-        #    'y_max': 10.0
-        #}
+        self.scale = 50
 
-    def reset(self, seed=None, options=None):
+    def reset(self, seed=None):
         """
-        reset the environment to an initial state and returns an initial observation.
+        Reset the environment with the given seed
         """
         super().reset(seed=seed)
         
-        # 1. Randomize Goal if needed
-        if self.goal_mode == "random":
-            self.goal_pos = self._generate_valid_goal()
-        else:
-            self.goal_pos = np.array([1.5, 2.0], dtype=np.float32)
+        # 1. Randomize Start Position
+        # Spawn somewhere within bounds, but ensure it's not too close to the goal (0,0)
+        # Add margin from boundaries to ensure robot spawns safely within limits
+        boundary_margin = 0.5  # Safety margin from boundaries
+        valid_start = False
+        while not valid_start:
+            x_rand = self.np_random.uniform(
+                self.area_bounds[0][0] + boundary_margin, 
+                self.area_bounds[0][1] - boundary_margin
+            )
+            y_rand = self.np_random.uniform(
+                self.area_bounds[1][0] + boundary_margin, 
+                self.area_bounds[1][1] - boundary_margin
+            )
+            dist_to_goal = np.linalg.norm([x_rand, y_rand])
+            
+            # Ensure we start at least some units away from goal
+            if dist_to_goal > 2.0:
+                valid_start = True
+                
+        self.state = np.zeros(self.scenario.state_dim, dtype=np.float32)
+        self.state[0] = x_rand
+        self.state[1] = y_rand
+        
+        # 2. Randomize Obstacles
+        # generate between 1 and max_obstacles in a random fashion
+        num_obs = self.np_random.integers(self.max_obstacles//2, self.max_obstacles + 1)
+        self.scenario.obstacles = []
+        
+        generated_count = 0
+        attempts = 0
+        max_attempts = 100 # Prevent infinite loops
+        obstacle_margin = 0.2  # Keep obstacles away from boundaries
+        
+        # Try over and over until you find a good solution for the obstacles generation
+        # Faster that checking manually every single obstacle
+        while generated_count < num_obs and attempts < max_attempts:
+            # Randomize pos and radius
+            orad = self.np_random.uniform(0.3, 0.8) # Radius between 0.3 and 0.8
+            
+            # Ensure obstacle stays within bounds (accounting for its radius)
+            ox = self.np_random.uniform(
+                self.area_bounds[0][0] + orad + obstacle_margin, 
+                self.area_bounds[0][1] - orad - obstacle_margin
+            )
+            oy = self.np_random.uniform(
+                self.area_bounds[1][0] + orad + obstacle_margin, 
+                self.area_bounds[1][1] - orad - obstacle_margin
+            )
+            
+            # Distance checks
+            d_goal = np.linalg.norm([ox, oy])                                  # Dist to goal (0,0)
+            d_start = np.linalg.norm([ox - self.state[0], oy - self.state[1]]) # Dist to start
+            
+            # Ensure obstacle is not covering Goal or Start
+            # Radius + safety margin
+            if d_goal > (orad + 0.5) and d_start > (orad + 0.5):
+                self.scenario.obstacles.append({'x': ox, 'y': oy, 'r': orad})
+                generated_count += 1
+            
+            attempts += 1
 
-        # 2. Reset Robot State
-        self.state = self.scenario.get_initial_state()
+        # Reset Goal (Fixed at 0,0)
+        self.goal_pos = np.zeros(2, dtype=np.float32)
         
-        # 3. Construct Observation
-        obs = self._get_obs()
-        
-        return obs, {}
+        return self._get_obs(), {}
 
     def step(self, action):
         """
-        Take an action in the environment and return the result.
+        Simulate a single step of the ewnvironment
         """
 
-        # 1. Clip action to valid range
+        # Clip action (must be in the action space)
         action = np.clip(action, self.action_space.low, self.action_space.high)
         
-        # 2. Physics Integration (Move the robot)
+        # Integrate Dynamics
         self.state = self._rk4_step(self.state, action, self.dt)
         
-        # 3. Calculate metrics
-        curr_pos = self.state[:2]
-        dist_to_goal = np.linalg.norm(curr_pos - self.goal_pos)
-        min_h = self.scenario.get_h(self.state)
-        is_safe = bool(min_h >= 0)
+        curr_pos = self.state[:2] # x, y coordinates
+        goal_xy = self.goal_pos
         
-        # 4. Check if robot is outside workspace boundaries
-        #outside_workspace = (
-        #    curr_pos[0] < self.workspace_bounds['x_min'] or 
-        #    curr_pos[0] > self.workspace_bounds['x_max'] or
-        #    curr_pos[1] < self.workspace_bounds['y_min'] or 
-        #    curr_pos[1] > self.workspace_bounds['y_max']
-        #)
+        dist_to_goal = np.linalg.norm(curr_pos - goal_xy)
         
-        # 5. Base Reward (Distance penalty + Control effort)
-        # This encourages moving toward goal and being efficient
-        reward = -dist_to_goal - 0.05 * np.linalg.norm(action)**2
+        # Safety Check
+        has_crashed = self.scenario.check_collision(self.state)
+
+        # Out-of-bound check
+        out_of_bounds = False
+        if self.state[0] - self.scenario.robot_radius < self.area_bounds[0][0] or self.state[0] + self.scenario.robot_radius > self.area_bounds[0][1] or \
+           self.state[1] - self.scenario.robot_radius < self.area_bounds[1][0] or self.state[1] + self.scenario.robot_radius > self.area_bounds[1][1]:
+            out_of_bounds = True
+        
+        # Reward
+        cost_state = (self.state - self.goal_pos).T @ self.scenario.Q @ (self.state - self.goal_pos)
+        cost_action = action.T @ self.scenario.R @ action
+        reward = - (cost_state + cost_action)
         
         terminated = False
         truncated = False
         
-        # 6. Outside Workspace Logic
-        #if outside_workspace:
-            #terminated = True   # Stop the episode
-            #reward = -1000.0     # Big penalty for leaving workspace
-            
-            #info = {"is_safe": False, "reason": "outside_workspace", "min_h": min_h, "position": curr_pos}
-            #return self._get_obs(), reward, terminated, truncated, info
-        
-        # 7. Collision Logic
-        if not is_safe:
-            terminated = True   # Stop the episode
-            reward = -1000.0     # Big penalty for crashing
-            
-            info = {"is_safe": False, "reason": "collision", "min_h": min_h}
+        # 3. Collision Logic
+        if has_crashed:
+            terminated = True
+            info = {"is_safe": False, "reason": "collision_with_obstacle"}
             return self._get_obs(), reward, terminated, truncated, info
 
+        if out_of_bounds:
+            terminated = True
+            info = {"is_safe": False, "reason": "out_of_bounds"}
+            return self._get_obs(), reward, terminated, truncated, info
         
-        # 8. Goal Reached Logic
-        if dist_to_goal < 0.2:
-            terminated = True   # Stop the episode
-            reward += 200.0     # Big bonus for success
-            
-            info = {"is_safe": True, "reason": "goal_reached", "min_h": min_h}
+        # 4. Success Logic
+        if dist_to_goal < self.goal_distance:
+            terminated = True
+            info = {"is_safe": True, "reason": "goal_reached"}
             return self._get_obs(), reward, terminated, truncated, info
 
-        # 9. Standard Info
-        info = {
-            "is_safe": True, 
-            "min_h": min_h, 
-            "dist_goal": dist_to_goal
-        }
+        info = {"is_safe": True, "dist_goal": dist_to_goal}
         
         if self.render_mode == "human":
             self._render_frame()
@@ -152,29 +185,15 @@ class ObstacleEnv(gym.Env):
         return self._get_obs(), reward, terminated, truncated, info
 
     def _get_obs(self):
-        # Concatenate State + Goal Position
+        """
+        get observation of the environment
+        in this case only the state of the system and the goal position w.r.t. the world frame
+        """
         return np.concatenate([self.state, self.goal_pos]).astype(np.float32)
-
-    def _generate_valid_goal(self):
-        """Generates a random goal that is not inside an obstacle."""
-        while True:
-
-            proposal = np.random.uniform(-4, 4, size=2).astype(np.float32)
-            
-            # Check collision with obstacles
-            valid = True
-            for obs in self.scenario.obstacles:
-                dist = np.linalg.norm(proposal - np.array([obs['x'], obs['y']]))
-                if dist < obs['r'] + 0.2: # Buffer
-                    valid = False
-                    break
-            
-            if valid:
-                return proposal
 
     def _rk4_step(self, x, u, dt):
         """
-        Runge-Kutta 4th order integration step. Used to have more accurate physics simulation.
+        dynamics integration
         """
         k1 = self.scenario.dynamics(x, u)
         k2 = self.scenario.dynamics(x + 0.5 * dt * k1, u)
@@ -183,6 +202,9 @@ class ObstacleEnv(gym.Env):
         return x + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
 
     def _render_frame(self):
+        """
+        render frame function to visualize the environment
+        """
         if self.window is None:
             pygame.init()
             self.window = pygame.display.set_mode((600, 600))
@@ -194,40 +216,44 @@ class ObstacleEnv(gym.Env):
         def to_pix(pos):
             return int(pos[0] * self.scale + 300), int(-pos[1] * self.scale + 300)
 
-        # 1. Draw Obstacles (Red)
+        # Draw Boundaries
+        x_min_pix = to_pix([self.area_bounds[0][0], 0])[0]
+        x_max_pix = to_pix([self.area_bounds[0][1], 0])[0]
+        y_min_pix = to_pix([0, self.area_bounds[1][0]])[1]
+        y_max_pix = to_pix([0, self.area_bounds[1][1]])[1]
+        
+        # Draw boundary rectangle (red lines)
+        pygame.draw.rect(canvas, (255, 0, 0), 
+                        (x_min_pix, y_max_pix, x_max_pix - x_min_pix, y_min_pix - y_max_pix), 
+                        3)  # 3 pixel width
+
+        # Draw Goal
+        goal_pix = to_pix(self.goal_pos[:2])
+        # Draw goal zone (0.25 unit threshold as light green circle)
+        pygame.draw.circle(canvas, (150, 255, 150), goal_pix, int(0.25 * self.scale), 2)
+        # Draw goal center
+        pygame.draw.circle(canvas, (50, 200, 50), goal_pix, 8) # Green Goal center
+
+        # Draw Obstacles
         for obs in self.scenario.obstacles:
             pos = to_pix([obs['x'], obs['y']])
             rad = int(obs['r'] * self.scale)
-            pygame.draw.circle(canvas, (200, 50, 50), pos, rad)
-            pygame.draw.circle(canvas, (100, 0, 0), pos, rad, 1)
+            # Make sure radius is at least 1 pixel
+            if rad < 1: rad = 1
+            pygame.draw.circle(canvas, (200, 50, 50), pos, rad) # Red Obstacles
 
-        # 2. Draw Goal (Green)
-        goal_pix = to_pix(self.goal_pos)
-        goal_rad = int(0.2 * self.scale) 
-        pygame.draw.circle(canvas, (50, 200, 50), goal_pix, goal_rad)
-
-        # 3. Draw Robot (Blue)
+        # Draw Robot with correct radius
         robot_pix = to_pix(self.state[:2])
-        robot_rad_pix = int(self.scenario.robot_radius * self.scale)
-        # Body (Light Blue)
-        pygame.draw.circle(canvas, (100, 100, 255), robot_pix, robot_rad_pix)
-        # Collision Boundary (Dark Blue Outline)
-        pygame.draw.circle(canvas, (0, 0, 150), robot_pix, robot_rad_pix, 2)
-        # Center Point (Small Black Dot for precision)
-        pygame.draw.circle(canvas, (0, 0, 0), robot_pix, 2)
-        
-        # If Unicycle, draw heading line
-        if isinstance(self.scenario, Unicycle):
-            theta = self.state[2]
-            end_x = self.state[0] + 0.5 * np.cos(theta)
-            end_y = self.state[1] + 0.5 * np.sin(theta)
-            pygame.draw.line(canvas, (0,0,0), robot_pix, to_pix([end_x, end_y]), 2)
+        robot_radius_pixels = int(self.scenario.robot_radius * self.scale)
+        pygame.draw.circle(canvas, (100, 100, 255), robot_pix, robot_radius_pixels) # Blue Robot
 
         self.window.blit(canvas, (0, 0))
         pygame.display.update()
         self.clock.tick(self.metadata["render_fps"])
 
     def close(self):
+        """
+        close the rendered environment
+        """
         if self.window is not None:
             pygame.quit()
-

@@ -1,1 +1,1 @@
-# Safe_exploration_RL_CBF
+# Safe Exploration Reinforcement Learning with Control Barrier Functions
