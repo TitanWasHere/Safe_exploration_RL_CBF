@@ -126,3 +126,81 @@ class PaperStaF(BasisStrategy):
                 grad_phi[i, :2] = c_i
 
         return phi, grad_phi
+
+
+class PolynomialBasis(BasisStrategy):
+    """
+    Polynomial basis functions up to a specified degree for n-dimensional state.
+    
+    Examples:
+        2D, degree=2: [1, x, y, x^2, xy, y^2] (L=6)
+        3D, degree=2: [1, x, y, z, x^2, xy, xz, y^2, yz, z^2] (L=10)
+        2D, degree=3: [1, x, y, x^2, xy, y^2, x^3, x^2*y, xy^2, y^3] (L=10)
+    """
+    def __init__(self, state_dim, degree=2):
+        super().__init__(state_dim)
+        self.degree = degree
+        
+        # Generate all monomial indices (exponent vectors) for n-dimensional case
+        # A monomial is x1^i1 * x2^i2 * ... * xn^in where i1 + i2 + ... + in <= degree
+        self.monomial_indices = self._generate_monomial_indices(state_dim, degree)
+        self.L = len(self.monomial_indices)
+
+    def _generate_monomial_indices(self, n_dim, max_degree):
+        """
+        Generate all monomial exponent vectors for n dimensions up to max_degree.
+        Uses recursive generation to find all (i1, i2, ..., in) where sum(ij) <= max_degree
+        """
+        def generate_recursive(n, max_sum, current=[]):
+            if n == 1:
+                for i in range(max_sum + 1):
+                    yield current + [i]
+            else:
+                for i in range(max_sum + 1):
+                    yield from generate_recursive(n - 1, max_sum - i, current + [i])
+        
+        monomials = list(generate_recursive(n_dim, max_degree))
+        return monomials
+
+    def evaluate(self, state, goal=None, center_state=None):
+        """
+        Evaluate polynomial basis and its gradient for n-dimensional state.
+        
+        Args:
+            state: Global state [x1, x2, ..., xn]
+            goal: Global goal [gx1, gx2, ..., gxn]
+            center_state: (Optional) Reference point for evaluation
+            
+        Returns:
+            phi (L,): Polynomial feature vector
+            grad_phi (L, state_dim): Gradient w.r.t state
+        """
+        if goal is None:
+            goal = np.zeros(self.state_dim)
+        
+        # Transform to relative coordinates
+        x_rel = state[:self.state_dim] - goal[:self.state_dim]
+        
+        phi = np.zeros(self.L)
+        grad_phi = np.zeros((self.L, self.state_dim))
+        
+        for idx, exponents in enumerate(self.monomial_indices):
+            # Compute monomial: x1^i1 * x2^i2 * ... * xn^in
+            monomial_val = 1.0
+            for dim, exp in enumerate(exponents):
+                monomial_val *= x_rel[dim] ** exp
+            phi[idx] = monomial_val
+            
+            # Compute gradient for each dimension
+            # d(x1^i1 * x2^i2 * ... * xn^in) / dxj = ij * x1^i1 * ... * xj^(ij-1) * ... * xn^in
+            for dim in range(self.state_dim):
+                if exponents[dim] > 0:
+                    grad_val = exponents[dim]
+                    for d, exp in enumerate(exponents):
+                        if d == dim:
+                            grad_val *= x_rel[d] ** (exp - 1)
+                        else:
+                            grad_val *= x_rel[d] ** exp
+                    grad_phi[idx, dim] = grad_val
+        
+        return phi, grad_phi

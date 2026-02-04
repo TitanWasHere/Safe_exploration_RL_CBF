@@ -150,7 +150,7 @@ class CasadiSafetyFilter:
             adaptive_c_b = self.c_b
             if dist_to_goal < 1.0:
                 # Reduce safety barrier more aggressively near goal
-                adaptive_c_b = self.c_b * (0.3 + 0.7 * dist_to_goal)
+                adaptive_c_b = self.c_b * (0.7 * dist_to_goal)
             
             # Standard LCBF Control Law with action limit constraint
             u_corr = -0.5 * adaptive_c_b * (R_inv @ (g_val.T @ total_grad_B))

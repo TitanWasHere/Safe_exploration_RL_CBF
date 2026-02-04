@@ -117,6 +117,7 @@ class SingleIntegratorSystem(ScenarioStrategy):
         self.action_max = 5.0
         # for Q and R use default
         self.c_b = 0.1
+        self.theta_true = np.array([], dtype=np.float32)  # No true parameters
     
     def get_f(self, x):
         return np.array([0,0], dtype=np.float32)
@@ -179,10 +180,12 @@ class UnderactuatedSystem(ScenarioStrategy):
         self.state_dim = 2
         self.theta_dim = 3
         self.action_dim = 1  # Fixed: underactuated means 1 control input
-        self.action_max = 15.0
+        self.action_max = 5.0
         self.R = np.array([[1.0]])  # Scalar control cost
         # default Q
         self.c_b = 1.0
+        # True parameters: theta1=-0.6, theta2=-1.0, theta3=1.0
+        self.theta_true = np.array([-0.6, -1.0, 1.0], dtype=np.float32)
     
     def get_f(self, x):
         return np.array([-0.6 * x[0] - x[1], x[0]**3], dtype=np.float32)

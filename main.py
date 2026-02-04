@@ -9,7 +9,7 @@ from controllers.rl_algo import SafeMBRL
 from controllers.learning_dyn import LearnerDynamics
 from controllers.safety_filter import CasadiSafetyFilter
 from src.scenarios import SingleIntegratorSystem, UnderactuatedSystem
-from src.basis_functions import PaperStaF
+from src.basis_functions import PaperStaF, PolynomialBasis
 
 # --- CONFIGURATION CONSTANTS ---
 WEIGHTS_DIR = "weights"
@@ -30,13 +30,16 @@ def get_basis(name, state_dim):
     # The paper uses L=3 polynomial StaF kernels
     if name == "paper_staf":
         return PaperStaF(state_dim)
+    elif name == "polynomial":
+        # Polynomial basis: degree=2 gives L=6 features
+        return PolynomialBasis(state_dim, degree=2)
     else:
-        raise ValueError(f"Unknown scenario: {name}")
+        raise ValueError(f"Unknown basis: {name}")
 
-def get_auto_filename(scenario_name):
-    """Generates standard filename: weights/scenario_staf.pkl"""
+def get_auto_filename(scenario_name, basis_name):
+    """Generates standard filename: weights/scenario_basis.pkl"""
     os.makedirs(WEIGHTS_DIR, exist_ok=True)
-    return os.path.join(WEIGHTS_DIR, f"{scenario_name}_staf.pkl")
+    return os.path.join(WEIGHTS_DIR, f"{scenario_name}_{basis_name}.pkl")
 
 def save_agent(agent, filepath):
     """Save weights and minimal config."""
@@ -119,7 +122,7 @@ def main():
     parser = argparse.ArgumentParser(description="Safe MBRL with CBF")
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'eval'])
     parser.add_argument('--scenario', type=str, default='single_integrator', choices=['single_integrator', 'underactuated'])
-    parser.add_argument('--basis', type=str, default='paper_staf', choices=['paper_staf'])
+    parser.add_argument('--basis', type=str, default='paper_staf', choices=['paper_staf', 'polynomial'])
     parser.add_argument('--episodes', type=int, default=100)
     parser.add_argument('--max_steps', type=int, default=500)
     parser.add_argument('--max_obstacles', type=int, default=5)
@@ -131,7 +134,7 @@ def main():
     # 1. Setup Architecture
     scenario = get_scenario(args.scenario)
     basis = get_basis(name=args.basis, state_dim=scenario.state_dim)
-    filepath = get_auto_filename(args.scenario)
+    filepath = get_auto_filename(args.scenario, args.basis)
     
     env = ObstacleEnv(scenario=scenario, render_mode="human" if args.render else None, goal_distance=GOAL_DISTANCE, max_obstacles=args.max_obstacles)
     
@@ -165,8 +168,12 @@ def main():
                 )
                 history.append(reward)
                 
-                theta_mag = np.linalg.norm(agent.dyn_learner.theta_hat)
-                print(f"Ep {ep+1:3d} | R: {reward:7.1f} | Dist: {dist:.2f} | Theta: {theta_mag:.2f} | {reason}")
+                # Calculate theta error (only if scenario has true parameters)
+                if scenario.theta_dim > 0:
+                    theta_error = np.linalg.norm(agent.dyn_learner.theta_hat - scenario.theta_true)
+                    print(f"Ep {ep+1:3d} | R: {reward:7.1f} | Dist: {dist:.2f} | Theta Error: {theta_error:.4f} | {reason}")
+                else:
+                    print(f"Ep {ep+1:3d} | R: {reward:7.1f} | Dist: {dist:.2f} | {reason}")
                 
         except KeyboardInterrupt:
             print("\nStopping early...")
