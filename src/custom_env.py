@@ -31,12 +31,13 @@ class ObstacleEnv(gym.Env):
         # Scenario
         self.scenario = scenario
 
-        # Goal is strictly at the Origin (0,0) and always 2D (x, y position)
-        self.goal_pos = np.zeros(2, dtype=np.float32)
+        # Goal is at the Origin — dimension matches scenario.goal_dim
+        self.goal_dim = getattr(scenario, 'goal_dim', 2)
+        self.goal_pos = np.zeros(self.goal_dim, dtype=np.float32)
 
         # OBSERVATION SPACE:
-        # State + Goal
-        self.obs_state_dim = self.scenario.state_dim + 2 
+        # State (n) + Goal (goal_dim)
+        self.obs_state_dim = self.scenario.state_dim + self.goal_dim 
 
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.obs_state_dim,), dtype=np.float32
@@ -83,6 +84,8 @@ class ObstacleEnv(gym.Env):
         self.state = np.zeros(self.scenario.state_dim, dtype=np.float32)
         self.state[0] = x_rand
         self.state[1] = y_rand
+        # Initialize extra state dimensions (e.g., heading for unicycle)
+        self.state = self.scenario.init_extra_state(self.state, self.np_random)
         
         # 2. Randomize Obstacles
         # generate between 1 and max_obstacles in a random fashion
@@ -122,8 +125,8 @@ class ObstacleEnv(gym.Env):
             
             attempts += 1
 
-        # Reset Goal (Fixed at 0,0)
-        self.goal_pos = np.zeros(2, dtype=np.float32)
+        # Reset Goal (Fixed at origin)
+        self.goal_pos = np.zeros(self.goal_dim, dtype=np.float32)
         
         return self._get_obs(), {}
 
@@ -152,8 +155,9 @@ class ObstacleEnv(gym.Env):
            self.state[1] - self.scenario.robot_radius < self.area_bounds[1][0] or self.state[1] + self.scenario.robot_radius > self.area_bounds[1][1]:
             out_of_bounds = True
         
-        # Reward
-        cost_state = (self.state - self.goal_pos).T @ self.scenario.Q @ (self.state - self.goal_pos)
+        # Reward (uses error state for n-dim compatibility)
+        x_error = self.scenario.get_error_state(self.state, self.goal_pos)
+        cost_state = x_error.T @ self.scenario.Q @ x_error
         cost_action = action.T @ self.scenario.R @ action
         reward = - (cost_state + cost_action)
         
@@ -246,6 +250,15 @@ class ObstacleEnv(gym.Env):
         robot_pix = to_pix(self.state[:2])
         robot_radius_pixels = int(self.scenario.robot_radius * self.scale)
         pygame.draw.circle(canvas, (100, 100, 255), robot_pix, robot_radius_pixels) # Blue Robot
+
+        # Draw heading indicator for systems with theta (state_dim > 2)
+        if self.scenario.state_dim > 2:
+            heading = self.state[2]
+            arrow_len = self.scenario.robot_radius * 2.5
+            end_x = self.state[0] - arrow_len * np.cos(heading)
+            end_y = self.state[1] - arrow_len * np.sin(heading)
+            end_pix = to_pix([end_x, end_y])
+            pygame.draw.line(canvas, (0, 0, 0), robot_pix, end_pix, 3)
 
         self.window.blit(canvas, (0, 0))
         pygame.display.update()

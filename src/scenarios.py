@@ -12,15 +12,16 @@ from abc import ABC, abstractmethod
 
 class ScenarioStrategy(ABC):
     def __init__(self):
-        self.state_dim = None    # State dimension
+        self.state_dim = None    # State dimension (n)
         self.theta_dim = None    # Theta dimension used for online dynamics learning
-        self.action_dim = None   # Action dimension
+        self.action_dim = None   # Action dimension (m)
+        self.goal_dim = 2        # Goal dimension (position target, always 2 for x,y)
         self.action_max = 10.0   # Default max action
         self.obstacles = []      # List of obstacles, each defined as a dict with keys 'x', 'y', 'r'
         self.robot_radius = 0.15 # Reduced from 0.2 to fit through tighter spaces
-        self.Q = np.eye(2)       # Default error penalty weights
-        self.R = np.eye(2)       # Default cost penalty weights
-        self.c_b = 1.0           # SAfewguarding gain used in CBF
+        self.Q = np.eye(2)       # Default error penalty weights (overridden per scenario)
+        self.R = np.eye(2)       # Default cost penalty weights (overridden per scenario)
+        self.c_b = 1.0           # Safeguarding gain used in CBF
 
     @abstractmethod
     def get_f(self, x): pass
@@ -56,6 +57,24 @@ class ScenarioStrategy(ABC):
     # General dynamics method
     def dynamics(self, x, u):
         return self.get_f(x) + self.get_g(x) @ u
+
+    def get_error_state(self, state, goal_pos):
+        """
+        Compute error state for value function approximation.
+        Default: subtract goal from first goal_dim components, keep remaining.
+        For state=[x,y,...], goal=[gx,gy]: error=[x-gx, y-gy, ...]
+        """
+        error = state.copy().astype(np.float64)
+        gdim = min(len(goal_pos), self.state_dim)
+        error[:gdim] -= goal_pos[:gdim]
+        return error
+
+    def init_extra_state(self, state, rng):
+        """
+        Initialize non-position state components during env reset.
+        Override in subclasses for systems with extra states (e.g., heading).
+        """
+        return state
 
     def check_collision(self, x):
         """
@@ -100,8 +119,6 @@ class ScenarioStrategy(ABC):
 
         return nearest_obs
 
-# First batch of scenarios, the one used in the paper examples
-
 class SingleIntegratorSystem(ScenarioStrategy):
     """
     First example made, Single integrator system (controls over velocity) with no drift
@@ -116,7 +133,7 @@ class SingleIntegratorSystem(ScenarioStrategy):
         self.action_dim = 2
         self.action_max = 5.0
         # for Q and R use default
-        self.c_b = 0.1
+        self.c_b = 0.01
         self.theta_true = np.array([], dtype=np.float32)  # No true parameters
     
     def get_f(self, x):
@@ -237,4 +254,122 @@ class UnderactuatedSystem(ScenarioStrategy):
         Y[0, 0] = x[0]    # theta1 (-0.6)
         Y[0, 1] = x[1]    # theta2 (-1.0)
         Y[1, 2] = x[0]**3 # theta3 (1.0)
+        return Y
+
+
+class UnicycleSystem(ScenarioStrategy):
+    """
+    Unicycle (differential-drive) robot with uncertain drag.
+    State: [x, y, theta]  (position + heading)
+    Control: [v, omega]   (linear velocity, angular velocity)
+    
+    True dynamics:
+        dx/dt  = v * cos(theta) + theta1 * x   (drag on x)
+        dy/dt  = v * sin(theta) + theta2 * y   (drag on y)
+        dth/dt = omega          + theta3 * theta (heading damping)
+    
+    Known kinematics (in g(x)*u): [[cos(th), 0], [sin(th), 0], [0, 1]]
+    Uncertain drift: Y(x)*theta  where Y = diag(x, y, theta)
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.state_dim = 3
+        self.theta_dim = 3
+        self.action_dim = 2
+        self.action_max = 5.0
+        self.goal_dim = 2  # Position-only goal (x, y)
+
+        # Cost matrices: penalize position heavily, heading lightly
+        self.Q = np.diag([1.0, 1.0, 0.1])
+        self.R = np.diag([0.5, 0.5])
+        self.c_b = 0.5
+
+        # True uncertain parameters (small damping)
+        self.theta_true = np.array([-0.1, -0.1, -0.05], dtype=np.float32)
+
+    def get_f(self, x):
+        """True drift: uncertain drag terms."""
+        return np.array([
+            self.theta_true[0] * x[0],
+            self.theta_true[1] * x[1],
+            self.theta_true[2] * x[2]
+        ], dtype=np.float32)
+
+    def get_g(self, x):
+        """Known input matrix: standard unicycle kinematics."""
+        theta = x[2]
+        return np.array([
+            [np.cos(theta), 0.0],
+            [np.sin(theta), 0.0],
+            [0.0,           1.0]
+        ], dtype=np.float32)
+
+    def get_casadi_model(self):
+        """CasADi symbolic model for CBF safety filter."""
+        x_sym = ca.SX.sym('x', 3)
+        theta_s = x_sym[2]
+
+        # Drift (true dynamics)
+        f_sym = ca.vertcat(
+            self.theta_true[0] * x_sym[0],
+            self.theta_true[1] * x_sym[1],
+            self.theta_true[2] * x_sym[2]
+        )
+
+        # Input matrix
+        g_sym = ca.vertcat(
+            ca.horzcat(ca.cos(theta_s), 0),
+            ca.horzcat(ca.sin(theta_s), 0),
+            ca.horzcat(0, 1)
+        )
+
+        # Obstacle barrier (position-only)
+        obs_x = ca.SX.sym('obs_x')
+        obs_y = ca.SX.sym('obs_y')
+        obs_r = ca.SX.sym('obs_r')
+        safe_dist = obs_r + self.robot_radius
+
+        h_obs = (x_sym[0] - obs_x)**2 + (x_sym[1] - obs_y)**2 - safe_dist**2
+
+        return {
+            'x_sym': x_sym,
+            'f_sym': f_sym,
+            'g_sym': g_sym,
+            'state_dim': self.state_dim,
+            'action_dim': self.action_dim,
+            'obs_params': (obs_x, obs_y, obs_r),
+            'h_obs': h_obs,
+            'pos_indices': (0, 1),
+        }
+
+    def get_error_state(self, state, goal_pos):
+        """
+        Error state for unicycle: [x-gx, y-gy, theta].
+        Heading stays as-is since goal heading is implicitly zero.
+        """
+        error = state.copy().astype(np.float64)
+        error[0] -= goal_pos[0]
+        error[1] -= goal_pos[1]
+        # theta remains unchanged (target heading = 0)
+        return error
+
+    def init_extra_state(self, state, rng):
+        """Randomize initial heading."""
+        state[2] = rng.uniform(-np.pi, np.pi)
+        return state
+
+    def get_kinematics(self, x):
+        """No known drift (all drift is uncertain via regressor)."""
+        return np.zeros(self.state_dim, dtype=np.float32)
+
+    def get_regressor(self, x):
+        """
+        Regressor Y(x) such that f(x) = Y(x) * theta.
+        Y = diag(x, y, theta)
+        """
+        Y = np.zeros((self.state_dim, self.theta_dim), dtype=np.float32)
+        Y[0, 0] = x[0]
+        Y[1, 1] = x[1]
+        Y[2, 2] = x[2]
         return Y

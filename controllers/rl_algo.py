@@ -1,14 +1,17 @@
 import numpy as np
 
 class SafeMBRL:
-    def __init__(self, dyn_learner, safety_filter, scenario, basis_strategy):
+    def __init__(self, dyn_learner, safety_filter, scenario, basis_strategy,
+                 use_safety_filter=True):
         """
         Args:
             basis_strategy (BasisStrategy): An instance of RBFBasis, PolynomialBasis, etc.
+            use_safety_filter (bool): If False, the CBF safety filter is bypassed.
         """
         self.dyn_learner = dyn_learner
         self.safety_filter = safety_filter
         self.scenario = scenario
+        self.use_safety_filter = use_safety_filter
         
         # 1. Plug-and-Play Basis
         self.basis = basis_strategy
@@ -21,6 +24,7 @@ class SafeMBRL:
         self.state_dim = scenario.state_dim
         self.action_dim = scenario.action_dim
         self.action_max = scenario.action_max
+        self.goal_dim = getattr(scenario, 'goal_dim', 2)
         
         # Hyperparameters
         self.kc1 = 0.1    
@@ -38,6 +42,16 @@ class SafeMBRL:
         # Weights Initialization
         self._initialize_weights_quadratic(static=self.static, static_value=self.weight_value)
         self.Gamma = np.eye(self.L) * 100.0
+
+        # --- Local Minima Escape ---
+        self._pos_history = []
+        self._stuck_window = 60       # steps to look back
+        self._stuck_threshold = 0.15  # displacement threshold
+        self._escape_direction = None
+        self._escape_steps = 0
+        self._escape_duration = 40    # steps per escape burst
+        self._escape_magnitude = 2.0  # perturbation strength
+        self._last_h_val = None       # store last CBF value for metrics
 
     def _initialize_weights_quadratic(self, static=False, static_value=0.0):
         """Pre-trains Wc to look like the cost function x.T @ Q @ x or initialize static weights"""
@@ -65,9 +79,9 @@ class SafeMBRL:
 
     def get_action(self, obs):
         state = obs[:self.state_dim]
-        goal = obs[-2:]
+        goal = obs[self.state_dim:]
 
-        x_rel = state - goal 
+        x_rel = self.scenario.get_error_state(state, goal)
 
         phi, grad_phi = self.basis.evaluate(x_rel, goal=None, center_state=None)
 
@@ -76,21 +90,57 @@ class SafeMBRL:
 
         u_nom = -0.5 * self.R_inv @ (g_x.T @ grad_V)
         u_nom = u_nom.flatten()
-        
-        nearby_obs = self.scenario.get_near_obstacle(state)
-        u_safe, _ = self.safety_filter.get_safe_action(
-            obs, u_nom, nearby_obs, self.R_inv, self.action_max
-        )
+
+        # --- Local Minima Escape ---
+        dist_to_goal = np.linalg.norm(state[:2] - goal[:2])
+        self._pos_history.append(state[:2].copy())
+        if len(self._pos_history) > self._stuck_window:
+            self._pos_history.pop(0)
+
+        if self._escape_steps <= 0 and len(self._pos_history) >= self._stuck_window:
+            displacement = np.linalg.norm(
+                self._pos_history[-1] - self._pos_history[0])
+            if displacement < self._stuck_threshold and dist_to_goal > 0.5:
+                # Stuck: pick a persistent random direction in action space
+                direction = np.random.randn(self.action_dim)
+                norm = np.linalg.norm(direction)
+                if norm > 1e-8:
+                    direction /= norm
+                self._escape_direction = direction * self._escape_magnitude
+                self._escape_steps = self._escape_duration
+
+        if self._escape_steps > 0 and self._escape_direction is not None:
+            u_nom += self._escape_direction
+            self._escape_steps -= 1
+
+        # --- Safety Filter ---
+        if self.use_safety_filter:
+            nearby_obs = self.scenario.get_near_obstacle(state)
+            u_safe, h_val = self.safety_filter.get_safe_action(
+                obs, u_nom, nearby_obs, self.R_inv, self.action_max
+            )
+            self._last_h_val = float(h_val)
+        else:
+            u_safe = np.clip(u_nom, -self.action_max, self.action_max)
+            self._last_h_val = None
+
         return u_safe
 
     def compute_cost(self, x_rel, u):
         return x_rel.T @ self.Q @ x_rel + u.T @ self.R @ u
 
+    def reset_episode(self):
+        """Reset per-episode state (call at start of each episode)."""
+        self._pos_history = []
+        self._escape_steps = 0
+        self._escape_direction = None
+        self._last_h_val = None
+
     def update(self, x_abs, u, x_next_abs, dt, goal):
         x_abs = x_abs.flatten()
         u = u.flatten()
 
-        x_rel = x_abs - goal[:self.state_dim]
+        x_rel = self.scenario.get_error_state(x_abs, goal[:self.state_dim])
 
         g_x = self.scenario.get_g(x_abs) 
         self.dyn_learner.update(x_abs, x_next_abs, u, dt, g_x)

@@ -41,6 +41,9 @@ class PaperStaF(BasisStrategy):
         - Center placement: Vertices of an equilateral triangle centered at x.
         - Center dynamics: c_i(x) = x + nu(x) * d_i
         - Mixing function: nu(x) = (x.T @ x) / (x.T @ x + 1)
+    
+    NOTE: This basis requires state_dim == 2 (as per the paper's 2D example).
+    For higher-dimensional systems, use PolynomialBasis or PolarBasis.
     """
     def __init__(self, state_dim, radius=1.0, num_kernel=3):
         super().__init__(state_dim)
@@ -203,4 +206,113 @@ class PolynomialBasis(BasisStrategy):
                             grad_val *= x_rel[d] ** exp
                     grad_phi[idx, dim] = grad_val
         
+        return phi, grad_phi
+
+
+class PolarBasis(BasisStrategy):
+    """
+    Polar-coordinate basis for unicycle-like systems (state_dim >= 3).
+    
+    Transforms the Cartesian error state [ex, ey, theta, ...] into polar
+    coordinates [rho, alpha] and builds polynomial features on them.
+    
+    Polar transformation:
+        rho   = sqrt(ex^2 + ey^2)         (distance to goal)
+        alpha = atan2(ey, ex) - theta      (heading error: angle between 
+                                            heading and line-of-sight to goal)
+    
+    This representation is natural for nonholonomic systems since the
+    control law can be directly expressed in terms of (rho, alpha).
+    
+    The gradient w.r.t. the original Cartesian state is computed via the
+    chain rule through the polar Jacobian.
+    """
+
+    def __init__(self, state_dim, degree=2):
+        super().__init__(state_dim)
+        assert state_dim >= 3, "PolarBasis requires state_dim >= 3 (needs heading)"
+        self.degree = degree
+        self.polar_dim = 2  # [rho, alpha]
+
+        # Generate polynomial monomial indices for 2D polar space
+        self.monomial_indices = self._gen_monomials(self.polar_dim, degree)
+        self.L = len(self.monomial_indices)
+
+    @staticmethod
+    def _gen_monomials(n_dim, max_deg):
+        """Generate exponent vectors for n_dim vars up to max_deg total degree."""
+        def _rec(n, max_s, curr=[]):
+            if n == 1:
+                for i in range(max_s + 1):
+                    yield curr + [i]
+            else:
+                for i in range(max_s + 1):
+                    yield from _rec(n - 1, max_s - i, curr + [i])
+        return list(_rec(n_dim, max_deg))
+
+    def _to_polar(self, ex, ey, theta):
+        """Convert [ex, ey, theta] to [rho, alpha] with clamped rho."""
+        rho = np.sqrt(ex**2 + ey**2)
+        rho_safe = max(rho, 1e-6)
+        bearing = np.arctan2(ey, ex)
+        alpha = self._wrap_angle(bearing - theta)
+        return rho, alpha, rho_safe
+
+    @staticmethod
+    def _wrap_angle(a):
+        """Wrap angle to [-pi, pi]."""
+        return (a + np.pi) % (2 * np.pi) - np.pi
+
+    def evaluate(self, state, goal=None, center_state=None):
+        """
+        Evaluate polar polynomial basis and gradient w.r.t. original state.
+        
+        Returns:
+            phi (L,): Feature vector
+            grad_phi (L, state_dim): Gradient w.r.t. [x, y, theta, ...]
+        """
+        if goal is None:
+            goal = np.zeros(self.state_dim)
+
+        # Error state
+        x_err = state[:self.state_dim].copy()
+        gdim = min(len(goal), self.state_dim)
+        x_err[:gdim] -= goal[:gdim]
+
+        ex, ey, theta = x_err[0], x_err[1], x_err[2] if self.state_dim >= 3 else 0.0
+        rho, alpha, rho_s = self._to_polar(ex, ey, theta)
+
+        # Jacobian of [rho, alpha] w.r.t. [ex, ey, theta]
+        # d(rho)/d(ex) = ex/rho,  d(rho)/d(ey) = ey/rho,  d(rho)/d(theta) = 0
+        # d(alpha)/d(ex) = -ey/rho^2,  d(alpha)/d(ey) = ex/rho^2,  d(alpha)/d(theta) = -1
+        J = np.zeros((2, self.state_dim))
+        J[0, 0] = ex / rho_s
+        J[0, 1] = ey / rho_s
+        J[1, 0] = -ey / (rho_s**2)
+        J[1, 1] = ex / (rho_s**2)
+        if self.state_dim >= 3:
+            J[1, 2] = -1.0
+
+        polar = np.array([rho, alpha])
+
+        phi = np.zeros(self.L)
+        grad_phi = np.zeros((self.L, self.state_dim))
+
+        for idx, exponents in enumerate(self.monomial_indices):
+            a, b = exponents  # rho^a * alpha^b
+
+            # Monomial value
+            val = (rho ** a) * (alpha ** b)
+            phi[idx] = val
+
+            # Gradient in polar coords: [d/drho, d/dalpha]
+            grad_polar = np.zeros(2)
+            if a > 0:
+                grad_polar[0] = a * (rho ** (a - 1)) * (alpha ** b)
+            if b > 0:
+                grad_polar[1] = (rho ** a) * b * (alpha ** (b - 1))
+
+            # Chain rule: grad_cartesian = grad_polar @ J
+            grad_phi[idx, :] = grad_polar @ J
+
         return phi, grad_phi
