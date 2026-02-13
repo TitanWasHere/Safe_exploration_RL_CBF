@@ -201,12 +201,10 @@ def train(args, scenario, basis, env, bounds, safety_on=True):
     curriculum_window = args.curriculum_window
     eps_at_current_level = 0          # reset when obstacles increase
 
-    # Compute step size so that we can reach max_obstacles within the
-    # available episodes.  max_bumps = episodes // window  (how many
-    # times we can possibly promote), step = ceil(gap / max_bumps).
+    # max_bumps = episodes // window 
     _max_bumps = max(1, args.episodes // curriculum_window)
     _gap = args.max_obstacles - args.start_obstacles
-    curriculum_step = max(1, -(-_gap // _max_bumps))   # ceil division
+    curriculum_step = max(1, -(-_gap // _max_bumps))
 
     print(f"\n--- Training {args.scenario} / {args.basis} [{tag}] ---")
     print(f"    Obstacle curriculum: {args.start_obstacles} → {args.max_obstacles} "
@@ -229,10 +227,7 @@ def train(args, scenario, basis, env, bounds, safety_on=True):
             )
             eps_at_current_level += 1
 
-            # --- Obstacle Curriculum ---
-            # Only evaluate after `curriculum_window` episodes at the
-            # *current* obstacle level so that easy-level successes
-            # don't immediately cascade into multiple bumps.
+            # Obstacle Curriculum
             if (eps_at_current_level >= curriculum_window
                     and current_obstacles < args.max_obstacles):
                 recent_success = tracker.get_success_rate(last_n=curriculum_window)

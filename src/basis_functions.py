@@ -32,8 +32,7 @@ class BasisStrategy(ABC):
 
 class PaperStaF(BasisStrategy):
     """
-    Exact implementation of the StaF kernel from Section 6 (Numerical Examples) 
-    of Cohen & Belta (2021).
+    Exact implementation of the StaF kernel from Section 6
     
     Paper Specifications:
         - Basis size: L = 3
@@ -41,9 +40,6 @@ class PaperStaF(BasisStrategy):
         - Center placement: Vertices of an equilateral triangle centered at x.
         - Center dynamics: c_i(x) = x + nu(x) * d_i
         - Mixing function: nu(x) = (x.T @ x) / (x.T @ x + 1)
-    
-    NOTE: This basis requires state_dim == 2 (as per the paper's 2D example).
-    For higher-dimensional systems, use PolynomialBasis or PolarBasis.
     """
     def __init__(self, state_dim, radius=1.0, num_kernel=3):
         super().__init__(state_dim)
@@ -62,10 +58,6 @@ class PaperStaF(BasisStrategy):
     def evaluate(self, state, goal=None, center_state=None):
         """
         Evaluate the basis function phi(y, c(x)) and its gradient w.r.t y.
-        
-        In the paper's notation:
-        - state corresponds to 'y' (the evaluation point)
-        - center_state corresponds to 'x' (the trajectory point defining the centers)
         """
         if goal is None: goal = np.zeros_like(state)
         
@@ -76,13 +68,12 @@ class PaperStaF(BasisStrategy):
         # Determine the center-generating state (x)
         if center_state is not None:
             # We are evaluating at a neighbor point y (x_eval), but centers are fixed at x (x_center)
-            # This is used for the "Simulation of Experience"
             x_center = center_state[:2] - goal[:2]
         else:
             # We are evaluating at x itself (y = x)
             x_center = x_eval
             
-        # 2. Compute Mixing Function nu(x)
+        # 2. Compute nu(x)
         # nu(x) = (x'x) / (x'x + 1)
         norm_sq = np.dot(x_center, x_center)
         nu = norm_sq / (norm_sq + 1.0)
@@ -144,8 +135,6 @@ class PolynomialBasis(BasisStrategy):
         super().__init__(state_dim)
         self.degree = degree
         
-        # Generate all monomial indices (exponent vectors) for n-dimensional case
-        # A monomial is x1^i1 * x2^i2 * ... * xn^in where i1 + i2 + ... + in <= degree
         self.monomial_indices = self._generate_monomial_indices(state_dim, degree)
         self.L = len(self.monomial_indices)
 
@@ -220,10 +209,7 @@ class PolarBasis(BasisStrategy):
         rho   = sqrt(ex^2 + ey^2)         (distance to goal)
         alpha = atan2(ey, ex) - theta      (heading error: angle between 
                                             heading and line-of-sight to goal)
-    
-    This representation is natural for nonholonomic systems since the
-    control law can be directly expressed in terms of (rho, alpha).
-    
+                                            
     The gradient w.r.t. the original Cartesian state is computed via the
     chain rule through the polar Jacobian.
     """

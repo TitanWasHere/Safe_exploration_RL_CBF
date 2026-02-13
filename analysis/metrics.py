@@ -133,8 +133,6 @@ class MetricsTracker:
             if obstacles is not None:
                 self.stored_obstacles.append((episode_idx, obstacles))
 
-    # --- Convenience queries ---
-
     def get_safety_violation_count(self):
         return sum(1 for r in self.episode_reasons
                    if "collision" in r or "out_of_bounds" in r)
@@ -151,8 +149,6 @@ class MetricsTracker:
         if last_n is not None:
             return float(np.mean(self.episode_success[-last_n:]))
         return float(np.mean(self.episode_success))
-
-    # --- I/O ---
 
     def save(self, filepath):
         os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else '.', exist_ok=True)

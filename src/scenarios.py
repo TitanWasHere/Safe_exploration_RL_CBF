@@ -2,10 +2,6 @@
 File in which we define different robot scenarios you can use in the custom env for safe RL.
 """
 
-# Obsolete: the function get_initial_stete is not used in the current implementation
-# The state is initialized in the custom_env.py file randomically
-
-
 import numpy as np
 import casadi as ca
 from abc import ABC, abstractmethod
@@ -124,7 +120,7 @@ class SingleIntegratorSystem(ScenarioStrategy):
     First example made, Single integrator system (controls over velocity) with no drift
     State: [px, py] (2D position)
     Control: [vx, vy] (velocity)
-    Dynamics: ẋ = u (pure velocity control)
+    Dynamics: x_dot = u (pure velocity control)
     """
     def __init__(self):
         super().__init__()
@@ -145,7 +141,6 @@ class SingleIntegratorSystem(ScenarioStrategy):
     def get_casadi_model(self):
         """
         Returns CasADi symbolic model for single integrator.
-        ẋ = f(x) + g(x)u = 0 + I₂·u = u
         """
         # State: [px, py]
         x_sym = ca.SX.sym('x', 2)
@@ -153,10 +148,10 @@ class SingleIntegratorSystem(ScenarioStrategy):
         # Drift: f(x) = 0
         f_sym = ca.SX.zeros(2)
         
-        # Control matrix: g(x) = I₂
+        # Control matrix: g(x) = I_2
         g_sym = ca.SX.eye(2)
         
-        # Obstacle barrier function h(x) = ||pos - obs||² - safe_dist²
+        # Obstacle barrier function h(x) = ||pos - obs||^2 - safe_dist^2
         obs_x = ca.SX.sym('obs_x')
         obs_y = ca.SX.sym('obs_y')
         obs_r = ca.SX.sym('obs_r')
@@ -189,14 +184,14 @@ class UnderactuatedSystem(ScenarioStrategy):
     Second example made, single integrator but underactuated with drift
     State: [x1, x2]
     Control: u (scalar)
-    Dynamics: ẋ₁ = -0.6x₁ - x₂, ẋ₂ = x₁³ + x₂·u
+    Dynamics: x_dot_1 = -0.6x_1 - x_2, x_dot_2 = x_1^3 + x_2·u
     """
 
     def __init__(self):
         super().__init__()
         self.state_dim = 2
         self.theta_dim = 3
-        self.action_dim = 1  # Fixed: underactuated means 1 control input
+        self.action_dim = 1
         self.action_max = 5.0
         self.R = np.array([[1.0]])  # Scalar control cost
         # default Q
@@ -208,17 +203,17 @@ class UnderactuatedSystem(ScenarioStrategy):
         return np.array([-0.6 * x[0] - x[1], x[0]**3], dtype=np.float32)
 
     def get_g(self, x):
-        return np.array([[0], [x[1]]], dtype=np.float32)  # Fixed: 2x1 matrix for underactuation
+        return np.array([[0], [x[1]]], dtype=np.float32)
     
     def get_casadi_model(self):
         """
         Returns CasADi symbolic model for underactuated system.
-        ẋ = f(x) + g(x)u where f has nonlinear drift and g depends on x₂
+        x_dot = f(x) + g(x)u where f has nonlinear drift and g depends on x_2
         """
         # State: [x1, x2]
         x_sym = ca.SX.sym('x', 2)
         
-        # Drift: f(x) = [-0.6*x1 - x2, x1³]
+        # Drift: f(x) = [-0.6*x1 - x2, x1^3]
         f_sym = ca.vertcat(-0.6 * x_sym[0] - x_sym[1], x_sym[0]**3)
         
         # Control matrix: g(x) = [0; x2] (underactuated)

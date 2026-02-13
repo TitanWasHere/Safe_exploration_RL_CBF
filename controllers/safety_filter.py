@@ -46,12 +46,7 @@ class CasadiSafetyFilter:
         
         # Build barrier function
         # Calculate h at current state (h_obs) and at goal (h_obs_0)
-        # Note: We assume the goal is "safe" (h>0). 
-        # For the goal state, we substitute the robot's position with the goal position
-        # We assume zero velocity at goal for dynamic systems
         
-        # Create a substitution vector for the goal state
-        # Initialize with zeros (assuming velocities/angles are zero at goal)
         x_goal_val = ca.SX.zeros(self.state_dim)
         x_goal_val[idx_x] = goal_x
         x_goal_val[idx_y] = goal_y
@@ -156,8 +151,7 @@ class CasadiSafetyFilter:
             u_corr = -0.5 * adaptive_c_b * (R_inv @ (g_val.T @ total_grad_B))
             u_safe = u_nom + u_corr
             
-            # Clip to action limits (integrated into safety filter)
-            # This ensures both safety AND action feasibility
+            # Clip to action limits
             u_safe = np.clip(u_safe, -action_max, action_max)
             
             return u_safe, min_h_val

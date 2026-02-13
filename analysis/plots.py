@@ -1,15 +1,7 @@
 """
 Plotting functions for Safe MBRL paper-style figures.
-Reproduces the diagrams from Cohen & Belta (2021):
-  - Learning curve (integral cost J(x0))
-  - Safety violations (cumulative)
-  - Parameter estimation error ||theta_hat - theta*||
-  - CBF value h(x) along trajectories
-  - State-space trajectories (2D phase plots)
-  - Bellman error convergence
-  - Weight norms ||Wc||, ||Wa||
-  - Comparison: safety filter ON vs OFF
 """
+
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
@@ -32,10 +24,6 @@ def smooth(data, window=10):
 def _ensure_dir(path):
     os.makedirs(os.path.dirname(path) if os.path.dirname(path) else '.', exist_ok=True)
 
-
-# ============================================================
-# Individual Plot Functions (each takes an axis or creates one)
-# ============================================================
 
 def plot_learning_curve(tracker, ax=None, label=None, color=None, window=10):
     """Paper Fig: Integral cost J(x0) per episode."""
@@ -299,11 +287,7 @@ def plot_success_rate(tracker, ax=None, label=None, color=None, window=20):
 
 
 def plot_obstacle_curriculum(tracker, ax=None, label=None, color=None, window=20):
-    """Plot obstacle count over episodes with success-rate overlay.
-
-    Shows how the curriculum progresses: obstacle count as a step plot
-    on the left axis and rolling success rate on the right axis so the
-    reader can see that obstacles increase when success is high."""
+    """Plot obstacle count over episodes with success-rate overlay."""
     if ax is None:
         fig, ax = plt.subplots(figsize=(8, 5))
     if not getattr(tracker, 'episode_obstacle_count', None):
@@ -339,11 +323,6 @@ def plot_obstacle_curriculum(tracker, ax=None, label=None, color=None, window=20
 
     ax.legend(loc='upper left', fontsize=8)
     return ax
-
-
-# ============================================================
-# Master Plotting Functions
-# ============================================================
 
 def generate_all_plots(tracker, save_dir='plots', scenario_name='', basis_name='',
                        area_bounds=None, show=False):

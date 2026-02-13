@@ -43,7 +43,7 @@ class SafeMBRL:
         self._initialize_weights_quadratic(static=self.static, static_value=self.weight_value)
         self.Gamma = np.eye(self.L) * 100.0
 
-        # --- Local Minima Escape ---
+        # Local Minima Escape
         self._pos_history = []
         self._stuck_window = 60       # steps to look back
         self._stuck_threshold = 0.15  # displacement threshold
@@ -91,7 +91,7 @@ class SafeMBRL:
         u_nom = -0.5 * self.R_inv @ (g_x.T @ grad_V)
         u_nom = u_nom.flatten()
 
-        # --- Local Minima Escape ---
+        # Local Minima Escape
         dist_to_goal = np.linalg.norm(state[:2] - goal[:2])
         self._pos_history.append(state[:2].copy())
         if len(self._pos_history) > self._stuck_window:
@@ -101,7 +101,7 @@ class SafeMBRL:
             displacement = np.linalg.norm(
                 self._pos_history[-1] - self._pos_history[0])
             if displacement < self._stuck_threshold and dist_to_goal > 0.5:
-                # Stuck: pick a persistent random direction in action space
+                # if stuck: pick a persistent random direction in action space
                 direction = np.random.randn(self.action_dim)
                 norm = np.linalg.norm(direction)
                 if norm > 1e-8:
@@ -113,7 +113,7 @@ class SafeMBRL:
             u_nom += self._escape_direction
             self._escape_steps -= 1
 
-        # --- Safety Filter ---
+        # Safety Filter
         if self.use_safety_filter:
             nearby_obs = self.scenario.get_near_obstacle(state)
             u_safe, h_val = self.safety_filter.get_safe_action(
@@ -204,8 +204,8 @@ class SafeMBRL:
         
         self.Gamma += dot_Gamma * dt
         
-        # Numerical Safety for Gamma (Keep it positive definite)
-        self.Gamma = 0.5 * (self.Gamma + self.Gamma.T) # Symmetry
+        # Numerical Safety for Gamma
+        self.Gamma = 0.5 * (self.Gamma + self.Gamma.T)
         eig_vals = np.linalg.eigvalsh(self.Gamma)
         if np.min(eig_vals) < 0.01:
             self.Gamma += 0.01 * np.eye(self.L)

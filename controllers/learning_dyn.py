@@ -40,9 +40,6 @@ class LearnerDynamics:
         
         if len(self.trajectory_window) >= self.integration_window:
             # Composite Adaptation / Concurrent Learning Integral Form
-            # Integral form: ∫ẋ dt = ∫(Y*θ + g*u) dt
-            # Therefore: x(t_end) - x(t_start) - ∫(g*u) dt = (∫Y dt) * θ
-            # This gives us: integral_Y @ theta = delta_x - integral_gu
             
             integral_Y = np.zeros((self.state_dim, self.theta_dim))
             integral_gu = np.zeros(self.state_dim)

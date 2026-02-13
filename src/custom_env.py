@@ -62,8 +62,6 @@ class ObstacleEnv(gym.Env):
         super().reset(seed=seed)
         
         # 1. Randomize Start Position
-        # Spawn somewhere within bounds, but ensure it's not too close to the goal (0,0)
-        # Add margin from boundaries to ensure robot spawns safely within limits
         boundary_margin = 0.5  # Safety margin from boundaries
         valid_start = False
         while not valid_start:
@@ -84,7 +82,7 @@ class ObstacleEnv(gym.Env):
         self.state = np.zeros(self.scenario.state_dim, dtype=np.float32)
         self.state[0] = x_rand
         self.state[1] = y_rand
-        # Initialize extra state dimensions (e.g., heading for unicycle)
+        # Initialize extra state dimensions
         self.state = self.scenario.init_extra_state(self.state, self.np_random)
         
         # 2. Randomize Obstacles
@@ -98,12 +96,11 @@ class ObstacleEnv(gym.Env):
         obstacle_margin = 0.2  # Keep obstacles away from boundaries
         
         # Try over and over until you find a good solution for the obstacles generation
-        # Faster that checking manually every single obstacle
         while generated_count < num_obs and attempts < max_attempts:
-            # Randomize pos and radius
+            
             orad = self.np_random.uniform(0.3, 0.8) # Radius between 0.3 and 0.8
             
-            # Ensure obstacle stays within bounds (accounting for its radius)
+            # Ensure obstacle stays within bounds
             ox = self.np_random.uniform(
                 self.area_bounds[0][0] + orad + obstacle_margin, 
                 self.area_bounds[0][1] - orad - obstacle_margin
@@ -135,7 +132,7 @@ class ObstacleEnv(gym.Env):
         Simulate a single step of the ewnvironment
         """
 
-        # Clip action (must be in the action space)
+        # Clip action
         action = np.clip(action, self.action_space.low, self.action_space.high)
         
         # Integrate Dynamics
@@ -155,7 +152,7 @@ class ObstacleEnv(gym.Env):
            self.state[1] - self.scenario.robot_radius < self.area_bounds[1][0] or self.state[1] + self.scenario.robot_radius > self.area_bounds[1][1]:
             out_of_bounds = True
         
-        # Reward (uses error state for n-dim compatibility)
+        # Reward
         x_error = self.scenario.get_error_state(self.state, self.goal_pos)
         cost_state = x_error.T @ self.scenario.Q @ x_error
         cost_action = action.T @ self.scenario.R @ action
