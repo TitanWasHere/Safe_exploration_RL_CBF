@@ -219,7 +219,7 @@ class SafeMBRL:
         dot_Wc = -self.Gamma @ (term_1 + term_2)
         self.Wc += dot_Wc * dt
         
-        # C. Actor Update (Eq. 24) -- The Missing Piece
+        # C. Actor Update (Eq. 24)
         # dWa = -ka1(Wa - Wc) - ka2*Wa + (kc1/4)*Term_Curr + (kc2/4)*Term_Sim
         
         # Current Experience Term
